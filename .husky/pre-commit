@@ -1,0 +1,7 @@
+echo "Running pre-commit checks..."
+
+# Execute local binaries instantly without global installs
+bunx lint-staged
+
+# Boot up the TypeScript compiler type checker using Bun
+bun run type-check
