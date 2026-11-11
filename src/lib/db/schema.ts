@@ -1,4 +1,13 @@
-import { pgTable, uuid, text, timestamp, integer, jsonb } from 'drizzle-orm/pg-core';
+import {
+  pgTable,
+  uuid,
+  text,
+  timestamp,
+  integer,
+  jsonb,
+  pgEnum,
+  boolean,
+} from 'drizzle-orm/pg-core';
 
 const createdAt = {
   createdAt: timestamp('created_at').defaultNow().notNull(),
@@ -35,6 +44,7 @@ export const marketTable = pgTable('markets', {
     .references(() => userTable.id, { onDelete: 'cascade' }),
   amount: integer('amount').default(0).notNull(),
   issuedStocks: integer('issued_stocks').default(0).notNull(),
+  avilabelStocks: integer('avilabel_stocks').default(0).notNull(),
   resolved: text('resolved'),
   expiresAt: timestamp('expires_at').notNull(),
   ...createdAt,
@@ -56,3 +66,24 @@ export const walletEventTable = pgTable('wallet_events', {
 
 export type SelectWalletEvent = typeof walletEventTable.$inferSelect;
 export type InsertWalletEvent = typeof walletEventTable.$inferInsert;
+
+export const orderTypeEnum = pgEnum('type', ['ask', 'bid']);
+
+export const orderTable = pgTable('market_orders', {
+  ...id,
+  marketId: uuid('market_id')
+    .notNull()
+    .references(() => marketTable.id, { onDelete: 'cascade' }),
+  userId: uuid('user_id')
+    .notNull()
+    .references(() => userTable.id, { onDelete: 'cascade' }),
+  amount: integer('amount').notNull(),
+  wantedStocks: integer('wanted_stocks').notNull(),
+  type: orderTypeEnum('type').notNull(),
+  isCompleted: boolean('isCompleted').notNull().default(false),
+  ...createdAt,
+  ...updatedAt,
+});
+
+export type SelectOrder = typeof orderTable.$inferSelect;
+export type InsertOrder = typeof orderTable.$inferInsert;

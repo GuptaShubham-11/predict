@@ -15,6 +15,9 @@ app.use('/api/v1/users', userRouter);
 import { marketRouter } from './routes/market';
 app.use('/api/v1/markets', marketRouter);
 
+import { orderRoutes } from './routes/order';
+app.use('/api/v1/orders', orderRoutes);
+
 // Global error handler
 app.use((err: Error, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
   console.error('❌ Error:', err.message);
