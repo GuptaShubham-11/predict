@@ -1,4 +1,4 @@
-import { pgTable, uuid, text, timestamp, integer } from 'drizzle-orm/pg-core';
+import { pgTable, uuid, text, timestamp, integer, jsonb } from 'drizzle-orm/pg-core';
 
 const createdAt = {
   createdAt: timestamp('created_at').defaultNow().notNull(),
@@ -43,3 +43,16 @@ export const marketTable = pgTable('markets', {
 
 export type SelectMarket = typeof marketTable.$inferSelect;
 export type InsertMarket = typeof marketTable.$inferInsert;
+
+export const walletEventTable = pgTable('wallet_events', {
+  ...id,
+  userId: uuid('user_id')
+    .notNull()
+    .references(() => userTable.id, { onDelete: 'cascade' }),
+  amount: integer('amount').notNull(),
+  metadata: jsonb('metadata').$type<Record<string, unknown>>().notNull().default({}),
+  ...createdAt,
+});
+
+export type SelectWalletEvent = typeof walletEventTable.$inferSelect;
+export type InsertWalletEvent = typeof walletEventTable.$inferInsert;

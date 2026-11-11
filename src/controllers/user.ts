@@ -1,7 +1,7 @@
 import { eq } from 'drizzle-orm';
 import { asyncHandler } from '../lib/async-handler';
 import { db } from '../lib/db';
-import { userTable } from '../lib/db/schema';
+import { userTable, walletEventTable } from '../lib/db/schema';
 import { auth } from '../lib/validations/auth';
 import * as argon2 from 'argon2';
 import { ApiError } from '../lib/api-error';
@@ -199,9 +199,18 @@ const increaseBalance = asyncHandler(async (req: AuthenticatedRequest, res) => {
   }
 
   let newBalance = user[0].balance;
-  newBalance += 100 - user[0].balance > 20 ? 20 : 100 - user[0].balance;
+  const incresedBalance = 100 - user[0].balance > 20 ? 20 : 100 - user[0].balance;
+  newBalance += incresedBalance;
 
   await db.update(userTable).set({ balance: newBalance }).where(eq(userTable.id, req.user.id));
+
+  await db.insert(walletEventTable).values({
+    userId: req.user.id,
+    amount: incresedBalance,
+    metadata: {
+      type: 'credit',
+    },
+  });
 
   res.status(200).json({
     success: true,

@@ -10,7 +10,10 @@ import { authRouter } from './routes/auth';
 app.use('/api/v1/auth', authRouter);
 
 import { userRouter } from './routes/user';
-app.use('/api/v1/user', userRouter);
+app.use('/api/v1/users', userRouter);
+
+import { marketRouter } from './routes/market';
+app.use('/api/v1/markets', marketRouter);
 
 // Global error handler
 app.use((err: Error, _req: express.Request, res: express.Response, _next: express.NextFunction) => {

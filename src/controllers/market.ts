@@ -1,7 +1,7 @@
 import { and, asc, desc, eq, ilike, or } from 'drizzle-orm';
 import { asyncHandler } from '../lib/async-handler';
 import { db } from '../lib/db';
-import { marketTable, userTable } from '../lib/db/schema';
+import { marketTable, userTable, walletEventTable } from '../lib/db/schema';
 import { market } from '../lib/validations/market';
 import { ApiError } from '../lib/api-error';
 import type { AuthenticatedRequest } from '../middlewares/verifyUser';
@@ -49,11 +49,6 @@ const createMarket = asyncHandler(async (req: AuthenticatedRequest, res) => {
     throw new ApiError(400, 'Not Enough Balance!');
   }
 
-  await db
-    .update(userTable)
-    .set({ balance: users[0].balance - amount })
-    .where(eq(userTable.id, req.user.id));
-
   const newMarkets = await db
     .insert(marketTable)
     .values({
@@ -71,6 +66,20 @@ const createMarket = asyncHandler(async (req: AuthenticatedRequest, res) => {
   if (newMarkets.length === 0 || !newMarkets[0]) {
     throw new ApiError(500, 'Market Not Created!');
   }
+
+  await db
+    .update(userTable)
+    .set({ balance: users[0].balance - amount })
+    .where(eq(userTable.id, req.user.id));
+
+  await db.insert(walletEventTable).values({
+    userId: req.user.id,
+    amount: amount,
+    metadata: {
+      type: 'debit',
+      marketId: newMarkets[0].id,
+    },
+  });
 
   res.status(201).json({
     success: true,
