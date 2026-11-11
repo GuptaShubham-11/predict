@@ -25,3 +25,21 @@ export const userTable = pgTable('users', {
 
 export type SelectUser = typeof userTable.$inferSelect;
 export type InsertUser = typeof userTable.$inferInsert;
+
+export const marketTable = pgTable('markets', {
+  ...id,
+  title: text('title').notNull(),
+  description: text('description').notNull(),
+  ownerId: uuid('owner_id')
+    .notNull()
+    .references(() => userTable.id, { onDelete: 'cascade' }),
+  amount: integer('amount').default(0).notNull(),
+  issuedStocks: integer('issued_stocks').default(0).notNull(),
+  resolved: text('resolved'),
+  expiresAt: timestamp('expires_at').notNull(),
+  ...createdAt,
+  ...updatedAt,
+});
+
+export type SelectMarket = typeof marketTable.$inferSelect;
+export type InsertMarket = typeof marketTable.$inferInsert;
