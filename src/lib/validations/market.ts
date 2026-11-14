@@ -16,3 +16,8 @@ export const market = z.object({
     .date()
     .refine((date) => date > new Date(), { message: 'Date must be in the future' }),
 });
+
+export const resolveMarket = z.object({
+  resolved: z.enum(['yes', 'no']),
+  verifiedLink: z.string().min(1, 'Verified Link is required'),
+});
