@@ -181,7 +181,7 @@ const increaseBalance = asyncHandler(async (req: AuthenticatedRequest, res) => {
     throw new ApiError(401, 'User Not Authenticated!');
   }
 
-  const user = await db
+  const [user] = await db
     .select({
       id: userTable.id,
       balance: userTable.balance,
@@ -190,16 +190,16 @@ const increaseBalance = asyncHandler(async (req: AuthenticatedRequest, res) => {
     .where(eq(userTable.id, req.user.id))
     .limit(1);
 
-  if (user.length === 0 || !user[0]) {
+  if (!user) {
     throw new ApiError(404, 'User Not Found!');
   }
 
-  if (user[0].balance >= 100) {
+  if (user.balance >= 100) {
     throw new ApiError(400, 'Balance Already Full!');
   }
 
-  let newBalance = user[0].balance;
-  const incresedBalance = 100 - user[0].balance > 20 ? 20 : 100 - user[0].balance;
+  let newBalance = user.balance;
+  const incresedBalance = 100 - user.balance > 20 ? 20 : 100 - user.balance;
   newBalance += incresedBalance;
 
   await db.update(userTable).set({ balance: newBalance }).where(eq(userTable.id, req.user.id));
@@ -207,8 +207,9 @@ const increaseBalance = asyncHandler(async (req: AuthenticatedRequest, res) => {
   await db.insert(walletEventTable).values({
     userId: req.user.id,
     amount: incresedBalance,
+    type: 'credit',
     metadata: {
-      type: 'credit',
+      title: 'Balance Increase by 20',
     },
   });
 

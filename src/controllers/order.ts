@@ -48,7 +48,7 @@ const createOrder = asyncHandler(async (req: AuthenticatedRequest, res) => {
         amount: marketTable.amount,
         expiresAt: marketTable.expiresAt,
         resolved: marketTable.resolved,
-        availableStocks: marketTable.avilabelStocks,
+        availableStocks: marketTable.availableStocks,
       })
       .from(marketTable)
       .where(eq(marketTable.id, marketId))
@@ -171,6 +171,7 @@ const createOrder = asyncHandler(async (req: AuthenticatedRequest, res) => {
     const createWalletEvent = async (
       targetUserId: string,
       eventAmount: number,
+      type: 'credit' | 'debit',
       metadata: Record<string, unknown>
     ) => {
       if (eventAmount <= 0) return;
@@ -178,6 +179,7 @@ const createOrder = asyncHandler(async (req: AuthenticatedRequest, res) => {
       await tx.insert(walletEventTable).values({
         userId: targetUserId,
         amount: eventAmount,
+        type,
         metadata,
       });
     };
@@ -256,16 +258,14 @@ const createOrder = asyncHandler(async (req: AuthenticatedRequest, res) => {
         await addHolding(userId, matchedStocks, outcome);
 
         // Wallet events
-        await createWalletEvent(userId, tradeAmount, {
-          type: 'debit',
+        await createWalletEvent(userId, tradeAmount, 'debit', {
           marketId,
           orderId: oldOrder.id,
           title: 'Bought Stocks',
           quantity: matchedStocks,
         });
 
-        await createWalletEvent(oldOrder.userId, tradeAmount, {
-          type: 'credit',
+        await createWalletEvent(oldOrder.userId, tradeAmount, 'credit', {
           marketId,
           orderId: oldOrder.id,
           title: 'Sold Stocks',
@@ -283,8 +283,7 @@ const createOrder = asyncHandler(async (req: AuthenticatedRequest, res) => {
         await addHolding(oldOrder.userId, matchedStocks, outcome);
 
         // Wallet event.
-        await createWalletEvent(userId, tradeAmount, {
-          type: 'credit',
+        await createWalletEvent(userId, tradeAmount, 'credit', {
           marketId,
           orderId: oldOrder.id,
           title: 'Sold Stocks',
@@ -324,7 +323,7 @@ const createOrder = asyncHandler(async (req: AuthenticatedRequest, res) => {
       await tx
         .update(marketTable)
         .set({
-          avilabelStocks: market.availableStocks - marketFilledStocks,
+          availableStocks: market.availableStocks - marketFilledStocks,
         })
         .where(eq(marketTable.id, marketId));
 
@@ -332,15 +331,13 @@ const createOrder = asyncHandler(async (req: AuthenticatedRequest, res) => {
       await addHolding(userId, marketFilledStocks, outcome);
 
       // Wallet events
-      await createWalletEvent(userId, purchaseAmount, {
-        type: 'debit',
+      await createWalletEvent(userId, purchaseAmount, 'debit', {
         marketId,
         title: 'Bought Market Stocks',
         quantity: marketFilledStocks,
       });
 
-      await createWalletEvent(market.ownerId, purchaseAmount, {
-        type: 'credit',
+      await createWalletEvent(market.ownerId, purchaseAmount, 'credit', {
         marketId,
         title: 'Sold Market Stocks',
         quantity: marketFilledStocks,
@@ -359,8 +356,7 @@ const createOrder = asyncHandler(async (req: AuthenticatedRequest, res) => {
 
       await debitBalance(reservedAmount);
 
-      await createWalletEvent(userId, reservedAmount, {
-        type: 'debit',
+      await createWalletEvent(userId, reservedAmount, 'debit', {
         marketId,
         title: 'Reserved Funds For Bid',
         quantity: remainingStocks,
@@ -559,8 +555,8 @@ const updateOrder = asyncHandler(async (req: AuthenticatedRequest, res) => {
         await tx.insert(walletEventTable).values({
           userId,
           amount: Math.abs(balanceDifference),
+          type: balanceDifference > 0 ? 'credit' : 'debit',
           metadata: {
-            type: balanceDifference > 0 ? 'credit' : 'debit',
             marketId: market.id,
             orderId,
             title:
@@ -734,8 +730,8 @@ const deleteOrder = asyncHandler(async (req: AuthenticatedRequest, res) => {
       await tx.insert(walletEventTable).values({
         userId: order.userId,
         amount: refundAmount,
+        type: 'credit',
         metadata: {
-          type: 'credit',
           title: 'Bid Order Cancellation Refund',
           orderId: order.id,
           marketId: order.marketId,

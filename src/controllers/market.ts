@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gt, ilike, or, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, gt, gte, ilike, or, sql } from 'drizzle-orm';
 import { asyncHandler } from '../lib/async-handler';
 import { db } from '../lib/db';
 import {
@@ -8,7 +8,7 @@ import {
   userTable,
   walletEventTable,
 } from '../lib/db/schema';
-import { market, resolveMarket } from '../lib/validations/market';
+import { createMarketInput, resolveMarketInput, splitInput } from '../lib/validations/market';
 import { ApiError } from '../lib/api-error';
 import type { AuthenticatedRequest } from '../middlewares/verifyUser';
 
@@ -19,12 +19,12 @@ const createMarket = asyncHandler(async (req: AuthenticatedRequest, res) => {
 
   const bodyData = req.body;
 
-  const validData = market.safeParse(bodyData);
+  const validData = createMarketInput.safeParse(bodyData);
   if (!validData.success) {
     throw new ApiError(400, validData.error.message);
   }
 
-  const { title, description, amount, issuedStocks, expiresAt } = validData.data;
+  const { title, description, expiresAt } = validData.data;
 
   const markets = await db
     .select({
@@ -38,31 +38,12 @@ const createMarket = asyncHandler(async (req: AuthenticatedRequest, res) => {
     throw new ApiError(409, 'You Already Have A Market With This Title!');
   }
 
-  const users = await db
-    .select({
-      id: userTable.id,
-      balance: userTable.balance,
-    })
-    .from(userTable)
-    .where(eq(userTable.id, req.user.id))
-    .limit(1);
-
-  if (users.length === 0 || !users[0]) {
-    throw new ApiError(404, 'User Not Found!');
-  }
-
-  if (users[0].balance < amount) {
-    throw new ApiError(400, 'Not Enough Balance!');
-  }
-
   const newMarkets = await db
     .insert(marketTable)
     .values({
       title,
       description,
       ownerId: req.user.id,
-      amount,
-      issuedStocks,
       expiresAt,
     })
     .returning({
@@ -72,21 +53,6 @@ const createMarket = asyncHandler(async (req: AuthenticatedRequest, res) => {
   if (newMarkets.length === 0 || !newMarkets[0]) {
     throw new ApiError(500, 'Market Not Created!');
   }
-
-  await db
-    .update(userTable)
-    .set({ balance: users[0].balance - amount })
-    .where(eq(userTable.id, req.user.id));
-
-  await db.insert(walletEventTable).values({
-    userId: req.user.id,
-    amount: amount,
-    metadata: {
-      type: 'debit',
-      marketId: newMarkets[0].id,
-    },
-  });
-
   res.status(201).json({
     success: true,
     message: 'Market Created Successfully',
@@ -112,6 +78,10 @@ const deleteMarket = asyncHandler(async (req: AuthenticatedRequest, res) => {
     .select({
       id: marketTable.id,
       ownerId: marketTable.ownerId,
+      resolved: marketTable.resolved,
+      amount: marketTable.amount,
+      availableStocks: marketTable.availableStocks,
+      expiresAt: marketTable.expiresAt,
     })
     .from(marketTable)
     .where(eq(marketTable.id, marketId))
@@ -123,6 +93,18 @@ const deleteMarket = asyncHandler(async (req: AuthenticatedRequest, res) => {
 
   if (market[0].ownerId !== req.user.id) {
     throw new ApiError(403, 'You Are Not The Owner Of This Market!');
+  }
+
+  if (market[0].resolved !== 'pending') {
+    throw new ApiError(400, 'Market Already Resolved!');
+  }
+
+  if (market[0].availableStocks > 0) {
+    throw new ApiError(400, 'Market Still Has Available Stocks!');
+  }
+
+  if (market[0].expiresAt <= new Date()) {
+    throw new ApiError(400, 'Market Expired!');
   }
 
   await db.delete(marketTable).where(eq(marketTable.id, marketId));
@@ -192,6 +174,148 @@ const getMarkets = asyncHandler(async (req, res) => {
   });
 });
 
+const split = asyncHandler(async (req: AuthenticatedRequest, res) => {
+  if (!req.user?.id) {
+    throw new ApiError(401, 'User Not Authenticated!');
+  }
+
+  const marketId = req.params.marketId as string;
+  if (!marketId) {
+    throw new ApiError(400, 'Market ID is required!');
+  }
+
+  const validData = splitInput.safeParse(req.body);
+
+  if (!validData.success) {
+    throw new ApiError(400, validData.error.message);
+  }
+
+  // Number of complete YES + NO sets.
+  const quantity = validData.data.amount;
+
+  // 1 complete set = ₹1.
+  const collateral = quantity;
+  const totalStocks = quantity * 2;
+
+  const result = await db.transaction(async (tx) => {
+    // 1. Lock market.
+    const [market] = await tx
+      .select()
+      .from(marketTable)
+      .where(eq(marketTable.id, marketId))
+      .for('update');
+
+    if (!market) {
+      throw new ApiError(404, 'Market Not Found!');
+    }
+
+    if (market.resolved !== 'pending') {
+      throw new ApiError(400, 'Market Already Resolved!');
+    }
+
+    if (market.expiresAt <= new Date()) {
+      throw new ApiError(400, 'Market Expired!');
+    }
+
+    // 2. Atomically deduct collateral from user.
+    const [user] = await tx
+      .update(userTable)
+      .set({
+        balance: sql`${userTable.balance} - ${collateral}`,
+        lockedBalance: sql`${userTable.lockedBalance} + ${collateral}`,
+      })
+      .where(and(eq(userTable.id, req.user!.id), gte(userTable.balance, collateral)))
+      .returning({
+        id: userTable.id,
+        balance: userTable.balance,
+      });
+
+    if (!user) {
+      throw new ApiError(400, 'Insufficient Balance or User Not Found!');
+    }
+
+    // 3. Increase market stock supply.
+    const [updatedMarket] = await tx
+      .update(marketTable)
+      .set({
+        amount: sql`${marketTable.amount} + ${collateral}`,
+        issuedStocks: sql`${marketTable.issuedStocks} + ${totalStocks}`,
+        availableStocks: sql`${marketTable.availableStocks} + ${totalStocks}`,
+        updatedAt: new Date(),
+      })
+      .where(eq(marketTable.id, marketId))
+      .returning();
+
+    if (!updatedMarket) {
+      throw new ApiError(500, 'Failed To Update Market!');
+    }
+
+    // 4. Create or update YES holdings.
+    await tx
+      .insert(stockHoldingTable)
+      .values({
+        userId: user.id,
+        marketId,
+        quantity,
+        outcome: 'yes',
+      })
+      .onConflictDoUpdate({
+        target: [stockHoldingTable.userId, stockHoldingTable.marketId, stockHoldingTable.outcome],
+        set: {
+          quantity: sql`${stockHoldingTable.quantity} + ${quantity}`,
+          updatedAt: new Date(),
+        },
+      });
+
+    // 5. Create or update NO holdings.
+    await tx
+      .insert(stockHoldingTable)
+      .values({
+        userId: user.id,
+        marketId,
+        quantity,
+        outcome: 'no',
+      })
+      .onConflictDoUpdate({
+        target: [stockHoldingTable.userId, stockHoldingTable.marketId, stockHoldingTable.outcome],
+        set: {
+          quantity: sql`${stockHoldingTable.quantity} + ${quantity}`,
+          updatedAt: new Date(),
+        },
+      });
+
+    // 6. Record collateral debit.
+    await tx.insert(walletEventTable).values({
+      userId: user.id,
+      amount: collateral,
+      type: 'debit',
+      metadata: {
+        title: 'Market Split',
+        marketId,
+        quantity,
+        yesShares: quantity,
+        noShares: quantity,
+      },
+    });
+
+    return {
+      marketId,
+      quantity,
+      collateral,
+      yesShares: quantity,
+      noShares: quantity,
+      totalStocks,
+      remainingBalance: user.balance,
+    };
+  });
+
+  res.status(200).json({
+    success: true,
+    message: 'Market split successfully!',
+    data: result,
+  });
+});
+
 const resolveMarketController = asyncHandler(async (req: AuthenticatedRequest, res) => {
   if (!req.user?.id) {
     throw new ApiError(401, 'User Not Authenticated!');
@@ -202,7 +326,7 @@ const resolveMarketController = asyncHandler(async (req: AuthenticatedRequest, r
     throw new ApiError(400, 'Market ID is required!');
   }
 
-  const parsed = resolveMarket.safeParse(req.body);
+  const parsed = resolveMarketInput.safeParse(req.body);
   if (!parsed.success) {
     throw new ApiError(400, parsed.error.message);
   }
@@ -285,8 +409,8 @@ const resolveMarketController = asyncHandler(async (req: AuthenticatedRequest, r
           await tx.insert(walletEventTable).values({
             userId: order.userId,
             amount: refund,
+            type: 'credit',
             metadata: {
-              type: 'credit',
               title: 'Market Resolution - Bid Refund',
               marketId,
               orderId: order.id,
@@ -379,8 +503,8 @@ const resolveMarketController = asyncHandler(async (req: AuthenticatedRequest, r
       await tx.insert(walletEventTable).values({
         userId: holding.userId,
         amount: payout,
+        type: 'credit',
         metadata: {
-          type: 'credit',
           title: 'Market Winning Payout',
           marketId,
           outcome: resolved,
@@ -428,5 +552,6 @@ export const marketController = {
   createMarket,
   deleteMarket,
   getMarkets,
+  split,
   resloveMarket: resolveMarketController,
 };

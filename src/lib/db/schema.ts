@@ -31,6 +31,7 @@ export const userTable = pgTable('users', {
   username: text('username').notNull().unique(),
   passwordHash: text('password_hash').notNull(),
   balance: integer('balance').default(0).notNull(),
+  lockedBalance: integer('locked_balance').default(0).notNull(),
   role: userRoleEnum('role').default('user').notNull(),
   ...createdAt,
   ...updatedAt,
@@ -50,7 +51,7 @@ export const marketTable = pgTable('markets', {
     .references(() => userTable.id, { onDelete: 'cascade' }),
   amount: integer('amount').default(0).notNull(),
   issuedStocks: integer('issued_stocks').default(0).notNull(),
-  avilabelStocks: integer('avilabel_stocks').default(0).notNull(),
+  availableStocks: integer('available_stocks').default(0).notNull(),
   resolved: resolvedEnum('resolved').default('pending'),
   verifiedLink: text('verified_link'),
   expiresAt: timestamp('expires_at').notNull(),
@@ -61,12 +62,15 @@ export const marketTable = pgTable('markets', {
 export type SelectMarket = typeof marketTable.$inferSelect;
 export type InsertMarket = typeof marketTable.$inferInsert;
 
+const walletEventTypeEnum = pgEnum('type', ['debit', 'credit']);
+
 export const walletEventTable = pgTable('wallet_events', {
   ...id,
   userId: uuid('user_id')
     .notNull()
     .references(() => userTable.id, { onDelete: 'cascade' }),
   amount: integer('amount').notNull(),
+  type: walletEventTypeEnum('type').notNull(),
   metadata: jsonb('metadata').$type<Record<string, unknown>>().notNull().default({}),
   ...createdAt,
 });
@@ -110,6 +114,7 @@ export const stockHoldingTable = pgTable(
       .notNull()
       .references(() => marketTable.id, { onDelete: 'cascade' }),
     quantity: integer('quantity').notNull(),
+    lockedQuantity: integer('locked_quantity').notNull().default(0),
     outcome: outcomeEnum('outcome').notNull(),
     ...createdAt,
     ...updatedAt,
