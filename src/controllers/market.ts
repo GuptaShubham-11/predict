@@ -8,7 +8,12 @@ import {
   userTable,
   walletEventTable,
 } from '../lib/db/schema';
-import { createMarketInput, resolveMarketInput, splitInput } from '../lib/validations/market';
+import {
+  createMarketInput,
+  mergeInput,
+  resolveMarketInput,
+  splitInput,
+} from '../lib/validations/market';
 import { ApiError } from '../lib/api-error';
 import type { AuthenticatedRequest } from '../middlewares/verifyUser';
 
@@ -316,6 +321,182 @@ const split = asyncHandler(async (req: AuthenticatedRequest, res) => {
   });
 });
 
+const merge = asyncHandler(async (req: AuthenticatedRequest, res) => {
+  if (!req.user?.id) {
+    throw new ApiError(401, 'User Not Authenticated!');
+  }
+
+  const marketId = req.params.marketId as string;
+
+  if (!marketId) {
+    throw new ApiError(400, 'Market ID is required!');
+  }
+
+  const validData = mergeInput.safeParse(req.body);
+
+  if (!validData.success) {
+    throw new ApiError(400, validData.error.message);
+  }
+
+  const { amount } = validData.data;
+  const userId = req.user.id;
+
+  if (!Number.isSafeInteger(amount) || amount <= 0 || amount > 2147483647) {
+    throw new ApiError(400, 'Invalid Merge Quantity!');
+  }
+
+  const totalStocks = amount * 2;
+
+  if (!Number.isSafeInteger(totalStocks) || totalStocks > 2147483647) {
+    throw new ApiError(400, 'Invalid Stock Quantity!');
+  }
+
+  const result = await db.transaction(async (tx) => {
+    // 1. Lock market.
+    const [market] = await tx
+      .select()
+      .from(marketTable)
+      .where(eq(marketTable.id, marketId))
+      .for('update');
+
+    if (!market) {
+      throw new ApiError(404, 'Market Not Found!');
+    }
+
+    if (market.resolved !== 'pending') {
+      throw new ApiError(400, 'Market Already Resolved!');
+    }
+
+    if (market.expiresAt <= new Date()) {
+      throw new ApiError(400, 'Market Expired!');
+    }
+
+    // 2. Check available market collateral.
+    if (market.amount < amount) {
+      throw new ApiError(400, 'Insufficient Market Collateral!');
+    }
+
+    // 3. Fetch and lock user's holdings.
+    const holdings = await tx
+      .select()
+      .from(stockHoldingTable)
+      .where(and(eq(stockHoldingTable.marketId, marketId), eq(stockHoldingTable.userId, userId)))
+      .for('update');
+
+    const yesHolding = holdings.find((holding) => holding.outcome === 'yes');
+
+    const noHolding = holdings.find((holding) => holding.outcome === 'no');
+
+    if (!yesHolding || !noHolding) {
+      throw new ApiError(400, 'You Need Both YES and NO Shares To Merge!');
+    }
+
+    // 4. Validate sufficient shares.
+    const mergeableQuantity = Math.min(yesHolding.quantity, noHolding.quantity);
+
+    if (amount > mergeableQuantity) {
+      throw new ApiError(400, `You Can Only Merge ${mergeableQuantity} Complete Sets!`);
+    }
+
+    // 5. Burn YES shares.
+    const [updatedYes] = await tx
+      .update(stockHoldingTable)
+      .set({
+        quantity: sql`${stockHoldingTable.quantity} - ${amount}`,
+        updatedAt: new Date(),
+      })
+      .where(and(eq(stockHoldingTable.id, yesHolding.id), gte(stockHoldingTable.quantity, amount)))
+      .returning({ id: stockHoldingTable.id });
+
+    if (!updatedYes) {
+      throw new ApiError(409, 'Failed To Deduct YES Shares!');
+    }
+
+    // 6. Burn NO shares.
+    const [updatedNo] = await tx
+      .update(stockHoldingTable)
+      .set({
+        quantity: sql`${stockHoldingTable.quantity} - ${amount}`,
+        updatedAt: new Date(),
+      })
+      .where(and(eq(stockHoldingTable.id, noHolding.id), gte(stockHoldingTable.quantity, amount)))
+      .returning({ id: stockHoldingTable.id });
+
+    if (!updatedNo) {
+      throw new ApiError(409, 'Failed To Deduct NO Shares!');
+    }
+
+    // 7. Return collateral to user's available balance.
+    const [user] = await tx
+      .update(userTable)
+      .set({
+        balance: sql`${userTable.balance} + ${amount}`,
+      })
+      .where(eq(userTable.id, userId))
+      .returning({
+        id: userTable.id,
+        balance: userTable.balance,
+      });
+
+    if (!user) {
+      throw new ApiError(404, 'User Not Found!');
+    }
+
+    // 8. Reduce market collateral and outstanding supply.
+    const [updatedMarket] = await tx
+      .update(marketTable)
+      .set({
+        amount: sql`${marketTable.amount} - ${amount}`,
+        issuedStocks: sql`${marketTable.issuedStocks} - ${totalStocks}`,
+        updatedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(marketTable.id, marketId),
+          gte(marketTable.amount, amount),
+          gte(marketTable.issuedStocks, totalStocks)
+        )
+      )
+      .returning();
+
+    if (!updatedMarket) {
+      throw new ApiError(400, 'Market Collateral or Stock Supply Is Insufficient!');
+    }
+
+    await tx.insert(walletEventTable).values({
+      userId,
+      amount,
+      type: 'credit',
+      metadata: {
+        title: 'Market Merge',
+        marketId,
+        quantity: amount,
+        yesShares: amount,
+        noShares: amount,
+        collateralReturned: amount,
+      },
+    });
+
+    return {
+      marketId,
+      mergedSets: amount,
+      collateralReturned: amount,
+      yesSharesBurned: amount,
+      noSharesBurned: amount,
+      totalStocksBurned: totalStocks,
+      remainingBalance: user.balance,
+      remainingMarketCollateral: updatedMarket.amount,
+      remainingIssuedStocks: updatedMarket.issuedStocks,
+    };
+  });
+
+  res.status(200).json({
+    success: true,
+    message: 'Market merged successfully!',
+    data: result,
+  });
+});
+
 const resolveMarketController = asyncHandler(async (req: AuthenticatedRequest, res) => {
   if (!req.user?.id) {
     throw new ApiError(401, 'User Not Authenticated!');
@@ -554,4 +735,5 @@ export const marketController = {
   getMarkets,
   split,
   resloveMarket: resolveMarketController,
+  merge,
 };

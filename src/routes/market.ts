@@ -10,3 +10,4 @@ marketRouter.delete('/delete/:marketId', marketController.deleteMarket);
 marketRouter.get('/', marketController.getMarkets);
 marketRouter.put('/resolve/:marketId', marketController.resloveMarket);
 marketRouter.put('/split/:marketId', marketController.split);
+marketRouter.put('/merge/:marketId', marketController.merge);

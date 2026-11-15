@@ -24,3 +24,12 @@ export const splitInput = z.object({
     .min(1, 'Amount must be at least 1')
     .max(1000, 'Amount must be at most 100'),
 });
+
+export const mergeInput = z.object({
+  amount: z
+    .number()
+    .int()
+    .positive()
+    .min(1, 'Amount must be at least 1')
+    .max(1000, 'Amount must be at most 100'),
+});
